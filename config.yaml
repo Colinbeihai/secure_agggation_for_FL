@@ -1,0 +1,18 @@
+num_clients: 10
+num_rounds: 3
+local_epochs: 2
+learning_rate: 0.01
+batch_size: 32
+aggregation: fedavg
+model: cnn
+dataset: mnist
+dropout_prob: 0.1          
+min_clients_to_aggregate: 8
+max_parallel_clients: 10
+reconnect_delay: 0.5        
+max_retries: 3          
+max_wait_time: 5.0         
+secure_aggregation: fastsecagg   
+benchmark:
+  enable: true             
+  csv_path: results/logs/bench.csv

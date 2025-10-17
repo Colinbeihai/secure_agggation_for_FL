@@ -1,0 +1,234 @@
+# 创建目录结构
+New-Item -ItemType Directory -Force -Path federated_learning_template\server | Out-Null
+New-Item -ItemType Directory -Force -Path federated_learning_template\client | Out-Null
+New-Item -ItemType Directory -Force -Path federated_learning_template\models | Out-Null
+New-Item -ItemType Directory -Force -Path federated_learning_template\data | Out-Null
+New-Item -ItemType Directory -Force -Path federated_learning_template\utils | Out-Null
+New-Item -ItemType Directory -Force -Path federated_learning_template\results\logs | Out-Null
+
+# 写入 main.py
+@'
+from server.server import Server
+from client.client_manager import ClientManager
+from utils.config_parser import load_config
+from utils.logger import Logger
+
+if __name__ == "__main__":
+    config = load_config("config.yaml")
+    logger = Logger("results/logs/train.log")
+
+    server = Server(config, logger)
+    clients = ClientManager(config, logger)
+
+    logger.log("Starting Federated Learning...")
+
+    for round in range(config["num_rounds"]):
+        logger.log(f"\n=== Round {round + 1}/{config['num_rounds']} ===")
+        global_model = server.get_global_model()
+        clients.distribute_model(global_model)
+        updates = clients.train_all()
+        server.aggregate(updates)
+        acc = server.evaluate()
+        logger.log(f"Round {round + 1} Accuracy: {acc:.4f}")
+
+    logger.log("Training completed.")
+'@ | Out-File -Encoding UTF8 federated_learning_template\main.py
+
+# 写入 config.yaml
+@'
+num_clients: 3
+num_rounds: 5
+local_epochs: 2
+learning_rate: 0.01
+batch_size: 32
+aggregation: fedavg
+model: cnn
+dataset: mnist
+'@ | Out-File -Encoding UTF8 federated_learning_template\config.yaml
+
+# 写入 requirements.txt
+@'
+torch>=2.1.0
+torchvision>=0.16.0
+pyyaml>=6.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+tensorboard>=2.14.0
+tqdm>=4.65.0
+'@ | Out-File -Encoding UTF8 federated_learning_template\requirements.txt
+
+# 写入 server\server.py
+@'
+import torch
+from models.cnn import CNN
+from server.aggregator import fed_avg
+from data.data_loader import get_test_loader
+
+class Server:
+    def __init__(self, config, logger):
+        self.config = config
+        self.logger = logger
+        self.global_model = CNN()
+        self.test_loader = get_test_loader()
+
+    def get_global_model(self):
+        return self.global_model.state_dict()
+
+    def aggregate(self, updates):
+        new_weights = fed_avg(updates)
+        self.global_model.load_state_dict(new_weights)
+
+    def evaluate(self):
+        self.global_model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for x, y in self.test_loader:
+                outputs = self.global_model(x)
+                _, predicted = torch.max(outputs, 1)
+                total += y.size(0)
+                correct += (predicted == y).sum().item()
+        return correct / total
+'@ | Out-File -Encoding UTF8 federated_learning_template\server\server.py
+
+# 写入 server\aggregator.py
+@'
+def fed_avg(updates):
+    total_samples = sum([u['num_samples'] for u in updates])
+    avg_weights = {}
+    for k in updates[0]['weights'].keys():
+        avg_weights[k] = sum(u['weights'][k] * u['num_samples'] / total_samples for u in updates)
+    return avg_weights
+'@ | Out-File -Encoding UTF8 federated_learning_template\server\aggregator.py
+
+# 写入 client\client.py
+@'
+import torch
+from torch import nn, optim
+from models.cnn import CNN
+from data.data_loader import get_local_loader
+
+class Client:
+    def __init__(self, client_id, config, logger):
+        self.id = client_id
+        self.config = config
+        self.logger = logger
+        self.model = CNN()
+        self.train_loader = get_local_loader(client_id)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=config["learning_rate"])
+
+    def set_weights(self, weights):
+        self.model.load_state_dict(weights)
+
+    def train_local(self):
+        self.model.train()
+        for epoch in range(self.config["local_epochs"]):
+            for x, y in self.train_loader:
+                self.optimizer.zero_grad()
+                outputs = self.model(x)
+                loss = self.criterion(outputs, y)
+                loss.backward()
+                self.optimizer.step()
+        return {"weights": self.model.state_dict(), "num_samples": len(self.train_loader.dataset)}
+'@ | Out-File -Encoding UTF8 federated_learning_template\client\client.py
+
+# 写入 client\client_manager.py
+@'
+from client.client import Client
+
+class ClientManager:
+    def __init__(self, config, logger):
+        self.clients = [Client(i, config, logger) for i in range(config["num_clients"])]
+        self.logger = logger
+
+    def distribute_model(self, global_weights):
+        for c in self.clients:
+            c.set_weights(global_weights)
+
+    def train_all(self):
+        updates = []
+        for client in self.clients:
+            self.logger.log(f"Client {client.id} training locally...")
+            update = client.train_local()
+            updates.append(update)
+        return updates
+'@ | Out-File -Encoding UTF8 federated_learning_template\client\client_manager.py
+
+# 写入 models\cnn.py
+@'
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CNN(nn.Module):
+    def __init__(self):
+        super(CNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 16, 3, 1)
+        self.conv2 = nn.Conv2d(16, 32, 3, 1)
+        self.fc1 = nn.Linear(5*5*32, 64)
+        self.fc2 = nn.Linear(64, 10)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.max_pool2d(F.relu(self.conv2(x)), 2)
+        x = x.view(-1, 5*5*32)
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
+'@ | Out-File -Encoding UTF8 federated_learning_template\models\cnn.py
+
+# 写入 data\data_loader.py
+@'
+import torch
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, random_split
+
+transform = transforms.Compose([transforms.ToTensor()])
+
+def get_local_loader(client_id, num_clients=3):
+    dataset = datasets.MNIST(root="./data/datasets", train=True, download=True, transform=transform)
+    part_size = len(dataset) // num_clients
+    parts = random_split(dataset, [part_size] * num_clients)
+    return DataLoader(parts[client_id], batch_size=32, shuffle=True)
+
+def get_test_loader():
+    test_dataset = datasets.MNIST(root="./data/datasets", train=False, download=True, transform=transform)
+    return DataLoader(test_dataset, batch_size=64, shuffle=False)
+'@ | Out-File -Encoding UTF8 federated_learning_template\data\data_loader.py
+
+# 写入 utils\config_parser.py
+@'
+import yaml
+
+def load_config(path):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+'@ | Out-File -Encoding UTF8 federated_learning_template\utils\config_parser.py
+
+# 写入 utils\logger.py
+@'
+import datetime
+import os
+
+class Logger:
+    def __init__(self, log_file):
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        self.log_file = log_file
+
+    def log(self, msg):
+        time = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        line = f"{time} {msg}"
+        print(line)
+        with open(self.log_file, "a") as f:
+            f.write(line + "\\n")
+'@ | Out-File -Encoding UTF8 federated_learning_template\utils\logger.py
+
+# 写入 utils\metrics.py
+@'
+def accuracy(pred, label):
+    return (pred.argmax(dim=1) == label).float().mean().item()
+'@ | Out-File -Encoding UTF8 federated_learning_template\utils\metrics.py
+
+Write-Host "`n✅ 项目已生成在 federated_learning_template 目录下！"
+Write-Host "👉 进入目录并执行："
+Write-Host "cd federated_learning_template"
+Write-Host "pip install -r requirements.txt"
+Write-Host "python main.py"

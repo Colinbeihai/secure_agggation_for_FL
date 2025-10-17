@@ -1,0 +1,44 @@
+# --- Python bytecode & build artifacts ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+build/
+dist/
+*.egg-info/
+__pypackages__/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- IDE/editor settings ---
+.vscode/
+.idea/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- Logs & run outputs ---
+results/logs/
+*.log
+
+# --- Datasets & large binaries ---
+data/datasets/
+*.pt
+*.pth
+*.onnx
+
+# --- Caches ---
+.cache/
+*.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
