@@ -1,7 +1,8 @@
 import hashlib
 import secrets
+import time
 import torch
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 TensorDict = Dict[str, torch.Tensor]
 
@@ -81,7 +82,7 @@ def aggregate_secure(round_id: int,
                      weight_template: TensorDict,
                      updates: List[dict],
                      online_ids: List[int],
-                     instance: FastSecAgg | None = None) -> TensorDict:
+                     instance: FastSecAgg | None = None) -> Tuple[TensorDict, dict]:
     proto = instance or FastSecAgg()
     all_ids = [u["client_id"] for u in updates]
     for cid in online_ids:
@@ -92,13 +93,23 @@ def aggregate_secure(round_id: int,
     total_samples = sum(int(u["num_samples"]) for u in updates)
     sum_masked = _zeros_like(weight_template)
 
+    t0 = time.time()
     for u in updates:
         weighted = {k: v.cpu() * float(u["num_samples"]) for k, v in u["weights"].items()}
         masked = proto.mask_update(u["client_id"], weighted)
         _add_inplace(sum_masked, masked, alpha=1.0)
+    t1 = time.time()
 
     sum_unmasked = proto.server_unmask_sum(sum_masked, online_ids)
+    t2 = time.time()
+
     avg = {k: sum_unmasked[k] / float(total_samples) for k in sum_unmasked.keys()}
-    return avg
+    stats = {
+        "mask_sum_time_s": round(t1 - t0, 6),
+        "unmask_time_s": round(t2 - t1, 6),
+        "total_clients": len(proto.all_ids),
+        "online_clients": len(online_ids),
+    }
+    return avg, stats
 
 

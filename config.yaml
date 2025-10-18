@@ -12,7 +12,12 @@ max_parallel_clients: 10
 reconnect_delay: 0.5        
 max_retries: 3          
 max_wait_time: 5.0         
-secure_aggregation: fastsecagg   
+secure_aggregation: scsecagg   
 benchmark:
   enable: true             
   csv_path: results/logs/bench.csv
+
+scsecagg:
+  num_servers: 6        
+  read_threshold: 4     
+  storage_factor: 2     

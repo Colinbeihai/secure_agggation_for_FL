@@ -48,6 +48,8 @@ if __name__ == "__main__":
             "num_online_clients",
             "train_time_s",
             "agg_time_s",
+            "mask_sum_time_s",
+            "unmask_time_s",
             "accuracy",
             "aggregated",
         ]
@@ -80,19 +82,7 @@ if __name__ == "__main__":
                 logger.log(f"Client {client.id} dropped out this round.")
                 return None
 
-        # 使用线程池并行执行客户端训练
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(train_client, client) for client in clients.clients]
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    # 附加 client_id，便于安全聚合识别
-                    # 注意：此处的 client_id 来自于并发上下文，故在返回时不丢失
-                    # 我们在分发任务时已绑定每个 client 实例
-                    # 这里无法直接从 future 获取 client 对象，改为在 client.train_local 返回后由外层补充
-                    # 为保证 client_id，修改 train_client 以返回 (id, payload)
-                    pass
-        # 由于上面的并发闭包中不便直接注入 id，这里重写并发逻辑以携带 id
+        # 并发执行并为每个结果附带 client_id
         updates = []
         def run_and_tag(client):
             res = train_client(client)
@@ -113,18 +103,39 @@ if __name__ == "__main__":
         aggregated = False
         if len(updates) >= min_clients:
             agg_start = time.time()
+            mask_sum_time = 0.0
+            unmask_time = 0.0
             if secure_mode == "secagg_plus":
                 from protocols.secagg_plus import aggregate_secure as secure_aggregate
                 online_ids = [u["client_id"] for u in updates]
                 global_template = server.get_global_model()
-                new_weights = secure_aggregate(round, global_template, updates, online_ids)
+                new_weights, stats = secure_aggregate(round, global_template, updates, online_ids)
+                mask_sum_time = float(stats.get("mask_sum_time_s", 0.0))
+                unmask_time = float(stats.get("unmask_time_s", 0.0))
                 server.global_model.load_state_dict({k: v.to(server.device) for k, v in new_weights.items()})
                 aggregated = True
             elif secure_mode == "fastsecagg":
                 from protocols.fastsecagg import aggregate_secure as secure_aggregate
                 online_ids = [u["client_id"] for u in updates]
                 global_template = server.get_global_model()
-                new_weights = secure_aggregate(round, global_template, updates, online_ids)
+                new_weights, stats = secure_aggregate(round, global_template, updates, online_ids)
+                mask_sum_time = float(stats.get("mask_sum_time_s", 0.0))
+                unmask_time = float(stats.get("unmask_time_s", 0.0))
+                server.global_model.load_state_dict({k: v.to(server.device) for k, v in new_weights.items()})
+                aggregated = True
+            elif secure_mode == "scsecagg":
+                from protocols.scsecagg import aggregate_secure as secure_aggregate, ScSecAgg
+                online_ids = [u["client_id"] for u in updates]
+                global_template = server.get_global_model()
+                # read config for scsecagg
+                sc_cfg = config.get("scsecagg", {})
+                num_servers = int(sc_cfg.get("num_servers", 5))
+                read_threshold = int(sc_cfg.get("read_threshold", 3))
+                storage_factor = int(sc_cfg.get("storage_factor", 2))
+                instance = ScSecAgg(num_servers=num_servers, read_threshold=read_threshold, storage_factor=storage_factor)
+                new_weights, stats = secure_aggregate(round, global_template, updates, online_ids, instance=instance)
+                mask_sum_time = float(stats.get("mask_sum_time_s", 0.0))
+                unmask_time = float(stats.get("unmask_time_s", 0.0))
                 server.global_model.load_state_dict({k: v.to(server.device) for k, v in new_weights.items()})
                 aggregated = True
             else:
@@ -143,6 +154,8 @@ if __name__ == "__main__":
                 "num_online_clients": len(updates),
                 "train_time_s": __builtins__.round(train_time, 6),
                 "agg_time_s": __builtins__.round(agg_time, 6),
+                "mask_sum_time_s": __builtins__.round(mask_sum_time, 6),
+                "unmask_time_s": __builtins__.round(unmask_time, 6),
                 "accuracy": __builtins__.round(acc, 6),
                 "aggregated": True,
             })
@@ -155,6 +168,8 @@ if __name__ == "__main__":
                 "num_online_clients": len(updates),
                 "train_time_s": __builtins__.round(train_time, 6),
                 "agg_time_s": 0.0,
+                "mask_sum_time_s": 0.0,
+                "unmask_time_s": 0.0,
                 "accuracy": "",
                 "aggregated": False,
             })
