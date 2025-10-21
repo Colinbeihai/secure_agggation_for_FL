@@ -62,8 +62,24 @@ if __name__ == "__main__":
     logger.log("Starting Federated Learning...")
 
     # -------------------- 2. 训练轮次 --------------------
-    for round in range(config["num_rounds"]):
-        logger.log(f"\n=== Round {round + 1}/{config['num_rounds']} ===")
+    es_cfg = config.get("early_stop", {"enable": False})
+    es_enable = bool(es_cfg.get("enable", False))
+    target_acc = float(es_cfg.get("target_accuracy", 1.0))
+    patience = int(es_cfg.get("patience", 0))
+    min_delta = float(es_cfg.get("min_delta", 0.0))
+
+    best_acc = -1.0
+    no_improve = 0
+    total_train_time = 0.0
+    total_agg_time = 0.0
+    stop_reason = "max_rounds_reached"
+
+    # open-ended training until early-stop or max_num_rounds
+    num_rounds_cfg = config.get("num_rounds", None)
+    max_rounds = int(config.get("max_num_rounds", num_rounds_cfg if num_rounds_cfg is not None else 100))
+    round = 0
+    while round < max_rounds:
+        logger.log(f"\n=== Round {round + 1} ===")
 
         # 分发全局模型
         global_model = server.get_global_model()
@@ -97,6 +113,7 @@ if __name__ == "__main__":
                 if res is not None:
                     updates.append(res)
         train_time = time.time() - train_start
+        total_train_time += train_time
 
         # -------------------- 4. 聚合判断 --------------------
         agg_time = 0.0
@@ -142,6 +159,7 @@ if __name__ == "__main__":
                 server.aggregate(updates)
                 aggregated = True
             agg_time = time.time() - agg_start
+            total_agg_time += agg_time
 
             acc = server.evaluate()
             logger.log(f"Round {round + 1} Accuracy: {acc:.4f}")
@@ -159,6 +177,22 @@ if __name__ == "__main__":
                 "accuracy": __builtins__.round(acc, 6),
                 "aggregated": True,
             })
+            # Early stopping checks
+            if es_enable:
+                improved = (acc >= best_acc + min_delta)
+                if improved:
+                    best_acc = acc
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if acc >= target_acc:
+                    logger.log(f"Target accuracy reached: {acc:.4f} >= {target_acc:.4f}. Stopping.")
+                    stop_reason = "target_accuracy_reached"
+                    break
+                if patience > 0 and no_improve >= patience:
+                    logger.log(f"Early stop: no improvement for {patience} rounds (best={best_acc:.4f}).")
+                    stop_reason = "no_improvement_patience"
+                    break
         else:
             logger.log(f"Round {round + 1} skipped aggregation: only {len(updates)} clients available.")
             write_bench_row({
@@ -173,5 +207,6 @@ if __name__ == "__main__":
                 "accuracy": "",
                 "aggregated": False,
             })
+        round += 1
 
-    logger.log("Training completed.")
+    logger.log(f"Training completed. reason={stop_reason}, rounds={round}, best_acc={best_acc:.4f}, total_train_time_s={total_train_time:.3f}, total_agg_time_s={total_agg_time:.3f}")

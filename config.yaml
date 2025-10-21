@@ -1,5 +1,6 @@
 num_clients: 10
-num_rounds: 3
+num_rounds: 20
+max_num_rounds: 20
 local_epochs: 2
 learning_rate: 0.01
 batch_size: 32
@@ -20,3 +21,8 @@ scsecagg:
   num_servers: 6
   read_threshold: 4
   storage_factor: 2
+early_stop:
+  enable: true
+  target_accuracy: 0.95
+  patience: 5
+  min_delta: 0.001

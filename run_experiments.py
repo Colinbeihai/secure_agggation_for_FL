@@ -55,6 +55,13 @@ def run_one(protocol: str, num_clients: int, dropout: float, run_idx: int) -> Pa
     scsec.setdefault("read_threshold", 4)
     scsec.setdefault("storage_factor", 2)
 
+    # Early-stop defaults (do not override user settings if already present)
+    es = cfg.setdefault("early_stop", {})
+    es.setdefault("enable", True)
+    es.setdefault("target_accuracy", 0.95)
+    es.setdefault("patience", 5)
+    es.setdefault("min_delta", 0.001)
+
     save_yaml(cfg, CONFIG_PATH)
 
     print(f"[RUN] protocol={protocol} num_clients={num_clients} dropout={dropout} run={run_idx}")
@@ -83,8 +90,11 @@ def summarize(csv_files: List[Path]) -> pd.DataFrame:
         df = df[df["aggregated"] == True].copy()
         if df.empty:
             continue
-        total_time = (pd.to_numeric(df["train_time_s"], errors="coerce").fillna(0.0)
-                      + pd.to_numeric(df["agg_time_s"], errors="coerce").fillna(0.0)).sum()
+        # total time actually elapsed can be bounded by sum until the last row
+        df = df.sort_values("round")
+        total_time = float((pd.to_numeric(df["train_time_s"], errors="coerce").fillna(0.0)
+                      + pd.to_numeric(df["agg_time_s"], errors="coerce").fillna(0.0)).sum())
+        rounds_to_target = int(df["round"].max()) if len(df) else 0
         # parse meta from filename
         name = p.name.replace(".csv", "")
         m = re.match(r"bench_(\w+)_C(\d+)_D([0-9.]+)_run(\d+)$", name)
@@ -105,7 +115,8 @@ def summarize(csv_files: List[Path]) -> pd.DataFrame:
             "num_clients": num_clients,
             "dropout_prob": dropout,
             "run": run,
-            "total_time_s": float(total_time)
+            "total_time_s": total_time,
+            "rounds_to_target": rounds_to_target
         })
     res = pd.DataFrame(rows)
     if res.empty:
@@ -113,7 +124,9 @@ def summarize(csv_files: List[Path]) -> pd.DataFrame:
     summary = (res.groupby(["protocol", "num_clients", "dropout_prob"], as_index=False)
                  .agg(total_time_mean=("total_time_s", "mean"),
                       total_time_std=("total_time_s", "std"),
-                      total_time_count=("total_time_s", "count")))
+                      total_time_count=("total_time_s", "count"),
+                      rounds_mean=("rounds_to_target", "mean"),
+                      rounds_std=("rounds_to_target", "std")))
     # 95% confidence interval (mean ± 1.96*std/sqrt(n))
     summary["total_time_ci95"] = 1.96 * summary["total_time_std"] / summary["total_time_count"].clip(lower=1).pow(0.5)
     return summary
@@ -173,6 +186,27 @@ def plot_curves(summary: pd.DataFrame) -> None:
         plt.grid(True, alpha=0.3)
         plt.legend()
         out = PLOTS_DIR / f"total_time_vs_dropout_clients{nc}.png"
+        plt.tight_layout()
+        plt.savefig(out, dpi=150)
+        plt.close()
+
+    # Rounds to target plots
+    for drop in sorted(summary["dropout_prob"].unique()):
+        sub = summary[summary["dropout_prob"] == drop]
+        plt.figure(figsize=(7, 5))
+        for proto in sorted(sub["protocol"].unique()):
+            ss = sub[sub["protocol"] == proto].sort_values("num_clients")
+            x = ss["num_clients"].to_numpy()
+            y = ss["rounds_mean"].to_numpy()
+            ci = (1.96 * ss["rounds_std"].fillna(0.0) / ss["total_time_count"].clip(lower=1).pow(0.5)).to_numpy()
+            plt.plot(x, y, marker=proto_markers.get(proto, "o"), color=proto_colors.get(proto), label=proto)
+            plt.fill_between(x, y - ci, y + ci, alpha=0.15, color=proto_colors.get(proto))
+        plt.title(f"Rounds to Target vs Clients (dropout={drop})")
+        plt.xlabel("num_clients")
+        plt.ylabel("rounds_to_target")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        out = PLOTS_DIR / f"rounds_vs_clients_drop{drop}.png"
         plt.tight_layout()
         plt.savefig(out, dpi=150)
         plt.close()
